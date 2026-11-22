@@ -933,6 +933,11 @@ DEFINE_CACHING_PYTHON_IMPORT_GETTER(
         .attr("_op_schema")
         .attr("TupleStrategy"))
 
+DEFINE_CACHING_PYTHON_IMPORT_GETTER(
+    get_fake_script_object_class,
+    py::module::import("torch._library.fake_class_registry")
+        .attr("FakeScriptObject"))
+
 static bool arg_type_tensor_or_tensor_list_like(py::handle arg) {
   const auto dtensor_spec_class = get_dtensor_spec_class();
   const auto op_strategy_class = get_op_strategy_class();
@@ -1470,6 +1475,15 @@ static py::object make_output_sharding(
       redistribute_schema.ptr(),
       cached.needs_redistribute ? Py_True : Py_False,
       cached.use_val_from_redistribute_schema ? Py_True : Py_False);
+}
+
+static py::object mesh_cache_key(py::handle mesh) {
+  if (Py_TYPE(mesh.ptr()) ==
+      reinterpret_cast<PyTypeObject*>(get_fake_script_object_class().ptr())) {
+
+    return mesh.attr("real_obj").attr("_cache_key");
+  }
+  return mesh.attr("_cache_key");
 }
 
 static std::optional<NativeOpSchemaAndMeshes> create_native_op_schema(
@@ -2574,7 +2588,7 @@ static std::optional<NativeOpSchemaAndMeshes> create_native_op_schema(
                                    &comparison_key_hash](py::object arg) {
     comparison_key_hash = c10::hash_combine(
         comparison_key_hash, static_cast<size_t>(py::hash(arg)));
-    comparison_key.emplace_back(std::move(arg));
+    comparison_key.emplace_back(arg.attr("_hash_key_no_mesh"));
   };
 
   const auto handle_non_tensor_or_undefined =
@@ -2832,7 +2846,13 @@ static std::optional<NativeOpSchemaAndMeshes> create_native_op_schema(
     return std::nullopt;
   }
 
-  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(meshes[0].is(compute_mesh));
+  for (const auto& mesh : meshes) {
+    comparison_key_hash = 
+        hash_combine(comparison_key_hash, static_cast<size_t>(py::hash(mesh)));
+    comparison_key.emplace_back(mesh_cache_key(mesh));
+  }
+
+  TORCH_INTERNAL_ASSERT(meshes[0].is(compute_mesh));
 
   return NativeOpSchemaAndMeshes{
       NativeOpSchema(
@@ -4212,3 +4232,4 @@ bool THPVariable_initModule(PyObject* module) {
 
   return true;
 }
+ 
