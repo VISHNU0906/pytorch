@@ -19,9 +19,9 @@ import typing
 from collections import Counter, defaultdict
 from concurrent.futures import as_completed, Future
 from typing import Any, Generic, Literal, overload, TYPE_CHECKING, TypeAlias, TypeVar
-from typing_extensions import ParamSpec
 
 from torch.utils._ordered_set import OrderedSet
+from typing_extensions import ParamSpec
 
 from .ir import ComputedBuffer, Pointwise
 
@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from .tiling_utils import CoalesceVarAnalysis
 
 import sympy
-
 import torch
 import torch._inductor.async_compile
 import torch.utils._pytree as pytree
@@ -286,9 +285,8 @@ def _is_loop_carried_compile_error(e: Exception) -> bool:
     both sides of that boundary or the workaround silently stops applying whenever
     the pool is in use.
     """
-    from triton.compiler.errors import CompilationError
-
     from torch._inductor.compile_worker.subproc_pool import SubprocException
+    from triton.compiler.errors import CompilationError
 
     return isinstance(e, (CompilationError, SubprocException)) and (
         "Loop-carried variable" in str(e)
@@ -6370,18 +6368,17 @@ class Scheduler:
                     self.nodes, self.name_to_buf
                 )
 
+            runtime_estimations_aligned = True
             if config_comms.runtime_estimations_align_across_all_distributed_ranks:
-                has_collectives = False
-                for node in self.nodes:
-                    if is_collective(node.node):
-                        has_collectives = True
-                        break
+                has_collectives = any(
+                    comms.contains_collective(node) for node in self.nodes
+                )
                 if has_collectives:
-                    from .comms import (
-                        align_runtime_estimations_across_all_distributed_ranks,
+                    runtime_estimations_aligned = (
+                        comms.align_runtime_estimations_across_all_distributed_ranks(
+                            self.nodes
+                        )
                     )
-
-                    align_runtime_estimations_across_all_distributed_ranks(self.nodes)
 
             # pyrefly: ignore [unbound-name]
             if config_comms.reorder_sink_verbose_logging:
@@ -6402,7 +6399,8 @@ class Scheduler:
                         ]
                     ),
                 )
-            self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
+            if runtime_estimations_aligned:
+                self.nodes = comms.reorder_compute_and_comm_for_overlap(self.nodes)
 
         if config.aten_distributed_optimizations.enable_simple_overlap:
             if (
