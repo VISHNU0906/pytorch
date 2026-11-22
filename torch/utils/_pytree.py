@@ -515,8 +515,8 @@ def _register_namedtuple(
     serialized.
 
     Args:
-        cls: the dataclass type to register
-        serialized_type_name: The serialized name for the dataclass. This is
+        cls: the namedtuple class to register
+        serialized_type_name: The serialized name for the namedtuple. This is
         required if you want to serialize the pytree TreeSpec containing this
         namedtuple.
     """
@@ -922,6 +922,27 @@ def _namedtuple_deserialize(dumpable_context: DumpableContext) -> Context:
     return typ
 
 
+def _namedtuple_node_deserialize(dumpable_context: DumpableContext) -> Context:
+    typ = _namedtuple_deserialize(dumpable_context)
+    # Best effort check: unflatten calls typ(*children), but a built-in tuple
+    # constructor, such as tuple.__new__ or torch.Size's, takes a single iterable.
+    if not isinstance(typ, type) or (
+        issubclass(typ, tuple)
+        and not is_namedtuple_class(typ)
+        and isinstance(typ.__new__, types.BuiltinMethodType)
+    ):
+        raise NotImplementedError(
+            f"Can't deserialize a namedtuple TreeSpec: {dumpable_context!r} points "
+            f"to {typ}, which is not a namedtuple class. The name must point to a "
+            "class, and a tuple subclass must be a namedtuple or have a __new__ "
+            "written in Python that takes the fields. "
+            "If the class under this name changed since the spec was saved, "
+            "register the original class under this name, or re-export the program, "
+            "or rebuild the spec from the current class, and save it again."
+        )
+    return typ
+
+
 def _ordereddict_flatten(d: OrderedDict[Any, T]) -> tuple[list[T], Context]:
     return list(d.values()), list(d.keys())
 
@@ -1049,7 +1070,7 @@ _private_register_pytree_node(
     _namedtuple_unflatten,
     serialized_type_name="collections.namedtuple",
     to_dumpable_context=_namedtuple_serialize,
-    from_dumpable_context=_namedtuple_deserialize,
+    from_dumpable_context=_namedtuple_node_deserialize,
     flatten_with_keys_fn=_namedtuple_flatten_with_keys,
 )
 _private_register_pytree_node(

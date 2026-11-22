@@ -2159,6 +2159,40 @@ class TestSaveLoad(TestCase):
         with self.assertRaisesRegex(RuntimeError, "ran into an error when deserializ"):
             load(buffer)
 
+    def test_load_namedtuple_output_whose_class_changed(self):
+        class Out(NamedTuple):
+            loss: torch.Tensor
+            logits: torch.Tensor
+
+        @dataclass
+        class DataOut:
+            loss: torch.Tensor
+            logits: torch.Tensor
+
+        class M(torch.nn.Module):
+            def forward(self, x):
+                return Out(x.sum(), x * 2)
+
+        name = "test.export.test_serialize.test_load_namedtuple_output.Out"
+        pytree._register_namedtuple(Out, serialized_type_name=name)
+        buffer = io.BytesIO()
+        save(export(M(), (torch.ones(2),)), buffer)
+        pytree._deregister_pytree_node(Out)
+        self.addCleanup(pytree.treespec_loads.cache_clear)
+
+        torch.export.register_dataclass(DataOut, serialized_type_name=name)
+        buffer.seek(0)
+        load(buffer)
+        pytree._deregister_pytree_node(DataOut)
+        pytree.treespec_loads.cache_clear()
+
+        NoFields = type("NoFields", (tuple,), {})
+        pytree._register_namedtuple(NoFields, serialized_type_name=name)
+        self.addCleanup(pytree._deregister_pytree_node, NoFields)
+        buffer.seek(0)
+        with self.assertRaisesRegex(NotImplementedError, "not a namedtuple class"):
+            load(buffer)
+
     @parametrize(
         "module_cls",
         [_EmptyAutocastInNoGrad, _StepCounter, _EmptyCond],

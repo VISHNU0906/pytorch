@@ -2,6 +2,7 @@
 
 import copy
 import enum
+import functools
 import inspect
 import os
 import pickle
@@ -1189,6 +1190,66 @@ if cxx_pytree.tree_leaves(foo) != [foo]:
             NotImplementedError, "Please register using `_register_namedtuple`"
         ):
             python_pytree.treespec_dumps(spec)
+
+    @skipIfTorchDynamo(msg="Dynamo cannot trace functools.cache on a __new__")
+    def test_pytree_deserialize_namedtuple_class_check(self):
+        import json
+
+        self.addCleanup(python_pytree.treespec_loads.cache_clear)
+
+        @dataclass
+        class Data:
+            x: int
+            y: int
+
+        class OwnNew(tuple):
+            __slots__ = ()
+
+            def __new__(cls, x, y):
+                return super().__new__(cls, (x, y))
+
+        CachedOwnNew = type(
+            "CachedOwnNew", (OwnNew,), {"__new__": functools.cache(OwnNew.__new__)}
+        )
+        Empty = namedtuple("Empty", [])
+        CachedNew = namedtuple("CachedNew", ["x"])
+        CachedNew.__new__ = functools.cache(CachedNew.__new__)
+        Plain = type("Plain", (), {})
+        ListFields = type("ListFields", (tuple,), {"_fields": ["x"]})
+        refused = [
+            ListFields,
+            type("OldPair", (tuple,), {"_fields": ("x", "y")}),
+            type("NoFields", (tuple,), {}),
+        ]
+        for cls in (Empty, CachedNew, OwnNew, CachedOwnNew, Plain, *refused):
+            python_pytree._register_namedtuple(
+                cls, serialized_type_name=f"test_pytree.{cls.__name__}"
+            )
+            self.addCleanup(python_pytree._deregister_pytree_node, cls)
+        python_pytree.register_dataclass(Data, serialized_type_name="test_pytree.Data")
+        self.addCleanup(python_pytree._deregister_pytree_node, Data)
+        for tree in (Empty(), CachedNew(1), ListFields((1,))):
+            spec = python_pytree.tree_structure(tree)
+            self.assertEqual(
+                python_pytree.treespec_loads(python_pytree.treespec_dumps(spec)), spec
+            )
+        node = {"type": "collections.namedtuple", "children_spec": []}
+        for cls in (OwnNew, CachedOwnNew, Data, Plain):
+            text = json.dumps([1, {**node, "context": f"test_pytree.{cls.__name__}"}])
+            self.assertIs(python_pytree.treespec_loads(text).context, cls)
+        leaf = python_pytree.treespec_dumps(python_pytree.tree_structure(1))
+        leaf = json.loads(leaf)[1]
+        for cls in (OwnNew, CachedOwnNew):
+            name = f"test_pytree.{cls.__name__}"
+            pair = {**node, "context": name, "children_spec": [leaf, leaf]}
+            spec = python_pytree.treespec_loads(json.dumps([1, pair]))
+            out = python_pytree.tree_unflatten([1, 2], spec)
+            self.assertEqual((type(out), out), (cls, (1, 2)))
+        names = ["builtins.tuple", "collections.namedtuple", "torch.Size"]
+        names += [f"test_pytree.{cls.__name__}" for cls in refused]
+        for name in names:
+            with self.assertRaisesRegex(NotImplementedError, "not a namedtuple class"):
+                python_pytree.treespec_loads(json.dumps([1, {**node, "context": name}]))
 
     def test_pytree_custom_type_serialize_bad(self):
         class DummyType:
