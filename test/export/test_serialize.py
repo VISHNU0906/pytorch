@@ -45,6 +45,7 @@ from torch._higher_order_ops.torchbind import enable_torchbind_tracing
 from torch._library.opaque_object import get_opaque_type_name, register_custom_class
 from torch._subclasses.fake_tensor import FakeTensorMode, is_fake_tensor
 from torch.export import Dim, export, load, save, unflatten
+from torch.export.pt2_archive import PT2ArchiveWriter
 from torch.export.pt2_archive.constants import ARCHIVE_VERSION_PATH
 from torch.fx.experimental.symbolic_shapes import is_concrete_int, ShapeEnv, ValueRanges
 from torch.testing._internal.common_device_type import (
@@ -2090,6 +2091,73 @@ class TestSaveLoad(TestCase):
         loaded_ep = load(buffer)
 
         self.assertTrue(torch.allclose(ep.module()(*inp), loaded_ep.module()(*inp)))
+
+    def test_load_raises_the_deserialization_error(self):
+        class Out(NamedTuple):
+            a: torch.Tensor
+
+        class M(torch.nn.Module):
+            def forward(self, x):
+                return Out(x + 1)
+
+        pytree._register_namedtuple(
+            Out,
+            serialized_type_name="test.export.test_serialize.test_load_raises.Out",
+        )
+        buffer = io.BytesIO()
+        save(export(M(), (torch.ones(2),)), buffer)
+        pytree._deregister_pytree_node(Out)
+        buffer.seek(0)
+        with self.assertRaisesRegex(NotImplementedError, "couldn't find a serialized"):
+            load(buffer)
+
+    def test_load_older_format(self):
+        class M(torch.nn.Module):
+            def forward(self, x):
+                return x + 1
+
+        artifact = serialize(export(M(), (torch.ones(2),)))
+        entries = {
+            "serialized_exported_program.json": artifact.exported_program,
+            "serialized_state_dict.pt": artifact.state_dict,
+            "serialized_constants.pt": artifact.constants,
+            "serialized_example_inputs.pt": artifact.example_inputs,
+            "version": ".".join(map(str, schema.SCHEMA_VERSION)),
+            "extra_files/archive_format": "pt2",
+        }
+        # In name order the extra file comes first, like a PT2 archive's record.
+        for names in (list(entries), sorted(entries)):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as zipf:
+                for name in names:
+                    zipf.writestr(name, entries[name])
+            buffer.seek(0)
+            extra_files = {"archive_format": ""}
+            ep = load(buffer, extra_files=extra_files)
+            self.assertEqual(ep.module()(torch.ones(2)), torch.ones(2) + 1)
+            self.assertEqual(extra_files, {"archive_format": "pt2"})
+
+    def test_load_error_messages(self):
+        buffer = io.BytesIO()
+        with PT2ArchiveWriter(buffer):
+            pass
+        buffer.seek(0)
+        with self.assertRaisesRegex(RuntimeError, "no exported program.*aoti_load"):
+            load(buffer)
+
+        buffer = io.BytesIO()
+        torch.save({"w": torch.ones(2)}, buffer)
+        buffer.seek(0)
+        with self.assertRaisesRegex(RuntimeError, "ran into an error when deserializ"):
+            load(buffer)
+
+        buffer = io.BytesIO()
+        writer = torch._C.PyTorchFileWriter(buffer, False)  # no CRC, so zipfile fails
+        writer.write_record("archive_format", b"pt2", 3)
+        writer.write_end_of_file()
+        buffer.seek(0)
+        with self.assertRaisesRegex(RuntimeError, "ran into an error when deserializ"):
+            load(buffer)
 
     @parametrize(
         "module_cls",

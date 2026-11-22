@@ -418,6 +418,22 @@ def load(
     extra_files = extra_files or {}
 
     from torch.export.pt2_archive._package import load_pt2, PT2ArchiveContents
+    from torch.export.pt2_archive.constants import (
+        ARCHIVE_FORMAT_PATH,
+        ARCHIVE_FORMAT_VALUE,
+    )
+
+    def is_pt2_archive(zipf: zipfile.ZipFile) -> bool:
+        # Same rule as is_pt2_package, but zip names always use "/", on every OS.
+        # A file with a top-level version record is in the older format.
+        names = zipf.namelist()
+        if not names or "version" in names:
+            return False
+        path = f"{names[0].split('/')[0]}/{ARCHIVE_FORMAT_PATH}"
+        try:
+            return path in names and zipf.read(path) == ARCHIVE_FORMAT_VALUE.encode()
+        except Exception:
+            return False
 
     try:
         pt2_contents = load_pt2(
@@ -425,6 +441,12 @@ def load(
             expected_opset_version=expected_opset_version,
         )
     except RuntimeError:
+        # Raise the loader's error for a PT2 archive. Any other file may be in the
+        # older format below.
+        if zipfile.is_zipfile(f):
+            with zipfile.ZipFile(f, "r") as zipf:
+                if is_pt2_archive(zipf):
+                    raise
         log.warning("Ran into the following error when deserializing", exc_info=True)
         pt2_contents = PT2ArchiveContents({}, {}, {})
 
@@ -437,6 +459,11 @@ def load(
     # TODO: For backward compatibility, we support loading a zip file from 2.7. Delete this path in 2.9(?)
     with zipfile.ZipFile(f, "r") as zipf:
         if "version" not in zipf.namelist():
+            if is_pt2_archive(zipf):
+                raise RuntimeError(
+                    "The saved file has no exported program. To load an "
+                    "AOTInductor package, use torch._inductor.aoti_load_package."
+                )
             raise RuntimeError(
                 "We ran into an error when deserializing the saved file. "
                 "Please check the warnings above for possible errors. "
