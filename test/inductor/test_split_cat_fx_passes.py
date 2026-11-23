@@ -1550,6 +1550,40 @@ class TestSplitCatFxPasses(TestCase):
             )
             counters.clear()
 
+    def test_split_slice_passes_negative_dim(self):
+        # The passes below rewrite part of a split into one slice of the split
+        # input. They must slice along the right dim when the split uses a
+        # negative dim and no normalization pass ran first.
+        def mutate_cat(x):
+            a, b, c = torch.split(x, [1, 3, 2], dim=-1)
+            return torch.cat([a, b], dim=-1) * 2 + c.sum()
+
+        def split_cat_to_slices(x):
+            items = torch.split(x, [1, 1, 1, 1, 2], dim=-1)
+            return torch.cat([items[0], items[1], items[2], items[4]], dim=-1)
+
+        def split_stack_to_cats(x):
+            items = torch.split(x, [1, 1, 1, 1, 2], dim=-1)
+            return torch.stack([items[0], items[1], items[2], items[3]], dim=-1)
+
+        x = torch.randn(3, 6)
+        for fn, pass_name, pass_options in [
+            (mutate_cat, "mutate_cat_pass", {}),
+            (split_cat_to_slices, "split_cat_to_slices_pass", {"threshold_to_cat": 2}),
+            (split_stack_to_cats, "split_stack_to_cats_pass", {"threshold_to_cat": 2}),
+        ]:
+            with self.subTest(pass_name=pass_name):
+                torch._dynamo.reset()
+                counters.clear()
+                with torch._inductor.config.patch(
+                    pre_grad_fusion_options={pass_name: pass_options},
+                    post_grad_fusion_options={},
+                ):
+                    actual = torch.compile(fn)(x)
+                torch.testing.assert_close(actual, fn(x))
+                self.assertEqual(counters["inductor"][pass_name], 1)
+        counters.clear()
+
     def test_numpy_compat_normalization(self):
         def fn(x, y):
             a = torch.stack([x, y], axis=1)

@@ -1671,9 +1671,11 @@ def mutate_cat_node(match: Match, split_sections: list[int], dim: int):
                     split_node,
                     indices,  # type: ignore[arg-type]
                 )
+                rank = split_node.args[0].meta["example_value"].dim()  # type: ignore[union-attr]
+                slice_dim = split_dim + rank if split_dim < 0 else split_dim
                 slice_list = []
-                for i in range(len(split_node.args[0].meta["example_value"].shape)):  # type: ignore[union-attr]
-                    if i != split_dim:
+                for i in range(rank):
+                    if i != slice_dim:
                         slice_list.append(slice(None, None, None))
                     else:
                         slice_list.append(slice(start_fused_size, end_fused_size, None))
@@ -2169,9 +2171,11 @@ def update_args_from_split_getitem(
                     # we need to slice the input of parent
                     start_fused_size = sum(split_size[: sublist[0]])
                     end_fused_size = sum(split_size[: sublist[-1] + 1])
+                    rank = split_input.meta["example_value"].dim()  # type: ignore[union-attr]
+                    slice_dim = split_dim + rank if split_dim < 0 else split_dim
                     slice_list = []
-                    for i in range(len(split_input.meta["example_value"].shape)):  # type: ignore[union-attr]
-                        if i != split_dim:
+                    for i in range(rank):
+                        if i != slice_dim:
                             slice_list.append(slice(None, None, None))
                         else:
                             slice_list.append(
