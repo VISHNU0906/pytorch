@@ -446,6 +446,14 @@ AOTI_TORCH_EXPORT AOTITorchError torch_string_to_pyobject(
     size_t length,
     void** ret); // returns new reference
 
+// Whether py_obj is Python None. A null py_obj is an error, not None.
+AOTI_TORCH_EXPORT AOTITorchError
+torch_is_none_pyobject(void* py_obj, bool* ret);
+
+// Return Python None.
+AOTI_TORCH_EXPORT AOTITorchError
+torch_new_none_pyobject(void** ret); // returns new reference
+
 // Returns whether torch.set_warn_always(True) is in effect.
 AOTI_TORCH_EXPORT bool torch_is_warn_always_enabled();
 
